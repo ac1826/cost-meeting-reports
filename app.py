@@ -28,6 +28,7 @@ TARGETS = {'PFS生产缩小差异': ('生产缩小差异', 6),
            'PFS 研发降本': ('研发降本', 7), 'MKA产品': ('MKA', 6),
            '观察产品': ('观察', 6), '肉松': (None, 4)}
 REQUIRED = ['列表', '本月', '上月', '上上月', '前三月平均', '负责人填写', '降本目标']
+MKA_NEGATIVE_MARGIN = 'AND(ISNUMBER(O3),O3<0)'
 
 
 class ReportError(Exception):
@@ -649,10 +650,14 @@ class Generator:
         # Existing full-column colour rules are retained; block-specific rules
         # are expanded from the first product so newly added rows are included.
         for cf in root.findall('m:conditionalFormatting', N):
-            if name == 'MKA产品' and any('INDEX($N:$N,ROW()-MOD(ROW()-3,6)+3)' in (f.text or '')
-                                        for f in cf.findall('m:cfRule/m:formula', N)):
-                root.remove(cf)
-                continue
+            if name == 'MKA产品':
+                for rule in cf.findall('m:cfRule', N):
+                    formula = rule.findtext('m:formula', default='', namespaces=N)
+                    if formula == MKA_NEGATIVE_MARGIN or 'INDEX($N:$N,ROW()-MOD(ROW()-3,6)+3)' in formula:
+                        cf.remove(rule)
+                if not len(cf):
+                    root.remove(cf)
+                    continue
             refs = cf.get('sqref', '').split()
             newrefs = []
             for ref in refs:
@@ -798,12 +803,7 @@ class Generator:
             styles.insert(list(styles).index(before) if before is not None else len(styles), dxfs)
         dxf = ET.Element(tag('dxf'))
         font = ET.SubElement(dxf, tag('font'))
-        ET.SubElement(font, tag('b'))
-        ET.SubElement(font, tag('color'), {'rgb': 'FF9C0006'})
-        fill = ET.SubElement(dxf, tag('fill'))
-        pattern = ET.SubElement(fill, tag('patternFill'), {'patternType': 'solid'})
-        ET.SubElement(pattern, tag('fgColor'), {'rgb': 'FFFFC7CE'})
-        ET.SubElement(pattern, tag('bgColor'), {'rgb': 'FFFFC7CE'})
+        ET.SubElement(font, tag('color'), {'rgb': 'FFFF0000'})
         # Reuse an existing identical style on repeated generation.
         target = ET.tostring(dxf)
         index = next((i for i, x in enumerate(dxfs) if ET.tostring(x) == target), None)
@@ -812,11 +812,9 @@ class Generator:
             dxfs.append(dxf)
         dxfs.set('count', str(len(dxfs)))
         self.changed['xl/styles.xml'] = xmlbytes(styles, self.parts['xl/styles.xml'])
-        cf = ET.Element(tag('conditionalFormatting'), {'sqref': f'A3:P{last}'})
-        # Highlight the complete six-row block; formula reacts to edited costs.
-        rule = ET.SubElement(cf, tag('cfRule'), {'type': 'expression', 'dxfId': str(index), 'priority': '1', 'stopIfTrue': '1'})
-        rate = 'INDEX($N:$N,ROW()-MOD(ROW()-3,6)+3)'
-        ET.SubElement(rule, tag('formula')).text = f'AND(ISNUMBER({rate}),ABS({rate})>0.05)'
+        cf = ET.Element(tag('conditionalFormatting'), {'sqref': f'O3:O{last}'})
+        rule = ET.SubElement(cf, tag('cfRule'), {'type': 'expression', 'dxfId': str(index), 'priority': '1'})
+        ET.SubElement(rule, tag('formula')).text = MKA_NEGATIVE_MARGIN
         for existing in root.findall('m:conditionalFormatting/m:cfRule', N):
             existing.set('priority', str(int(existing.get('priority', '1')) + 1))
         before = next((x for x in root if x.tag in [tag('conditionalFormatting'), tag('dataValidations'), tag('pageMargins'), tag('pageSetup')]), None)
@@ -899,7 +897,7 @@ class Generator:
                       *[f'{name}：{count}个产品' for name, count in self.counts.items()], '',
                       '提示共' + str(len(self.warnings)) + '条：', *self.warnings,
                       '', '处理说明：原文件未修改；宏原样保留且未运行；负责人和目标保留关联公式。',
-                      '列表按渠道全部生成；MKA总成本偏差率绝对值超过5%时突出显示。',
+                      '列表按渠道全部生成；MKA边贡率为负数时仅将该百分比显示为红字。',
                       '肉松取本月“蚌埠二厂肉松”，排除成品名包含“推广包”的产品。',
                       '缺失数值及分母为0的比例显示为空；产品族内产品个数留空。',
                       '人工区内容按目标表＋工厂＋物料号＋字段恢复。',
